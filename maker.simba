@@ -1,0 +1,534 @@
+//{$DEFINE SCRIPT_ID := '242c8d26-e9c9-4de5-945b-5f0288307dfc'}
+{$DEFINE SCRIPT_REVISION := '1'}
+{$IFNDEF SCRIPT_CHAIN}
+  {$DEFINE SCRIPT_GUI}
+  {$I SRL-T/osr.simba}
+  {$I WaspLib/osr.simba}
+
+begin
+  Login.PlayerIndex := 0;
+end;
+{$ENDIF}
+
+const MakeTypes: TRSItemArray = [
+ 'Ruby',
+ 'Ranarr potion (unf)',
+ 'Toadflax potion (unf)',
+ 'Strength potion(3)',
+ 'Energy potion(3)',
+ //'Dragonstone bolts',
+ //'Ruby bolts',
+ 'Magic longbow (u)',
+ 'Magic longbow',
+ 'Yew longbow (u)',
+ 'Yew longbow',
+ 'Maple longbow (u)',
+ 'Maple longbow',
+ 'Willow longbow (u)',
+ 'Willow longbow',
+ 'Oak longbow (u)',
+ 'Oak longbow',
+ 'Pineapple pizza',
+ 'Fertilizer',
+ 'Custom'
+];
+
+  var SelectedSkill := ERSSkill.FLETCHING;
+  var SelectedItemOne: TRSItem;
+  var SelectedItemTwo: TRSItem;
+  var SelectedProduce: TRSItem;
+  var MakeProduceOption: TRSItem;
+  var WithdrawQuantity: Int32 := 14;
+  var GivesExp: Boolean := True;
+  var HasTool: Boolean := False; //Use this when using a tool. for example fletching yew logs into bows(u)
+
+type
+  EMakerState = (
+    LEVEL_UP,
+    CLOSE_CONTEXT,
+
+    OPEN_BANK,
+    WITHDRAW_TOOL,
+    WITHDRAW_MATERIAL,
+    DEPOSIT_PRODUCT,
+
+    OPEN_COLLECT,
+    HANDLE_COLLECT,
+    CLOSE_INTERFACE,
+
+    OPEN_INVENTORY,
+
+    COMBINE_ITEMS,
+    WAIT_PRODUCING,
+
+    OUT_OF_SUPPLIES,
+    END_SCRIPT
+  );
+
+
+
+
+  TMaker = record(TBaseBankScript)
+    State: EMakerState;
+    Producing: Boolean;
+
+    ItemOne: TRSItem;
+    ItemTwo: TRSItem;
+    Produce: TRSItem;
+    MakeSelectOption: TRSItem;
+    Quantity: Int32;
+    GivesExp: Boolean;
+    UseTool: Boolean;
+    ProduceCount: Int32; //Count the items produces (!! NOT TOTAL. current inv only)
+  end;
+
+procedure TAntiban.Setup(); override;
+begin
+  if GivesExp then
+    Self.Skills := [SelectedSkill]
+  else
+    Self.Skills := [];
+
+  Self.MinZoom := 15;
+  Self.MaxZoom := 85;
+
+  inherited;
+end;
+
+procedure TMaker.Init(maxActions: Int32; maxTime: Int64); override;
+begin
+  inherited;
+  ItemFinder.Similarity := 0.9999;
+
+  begin
+    Writeln('ItemOne: ' + SelectedItemOne) ;
+    Writeln('ItemTwo: ' + SelectedItemTwo) ;
+    Writeln('Produce: ' + SelectedProduce) ;
+    Writeln('Quantity: ' + ToStr(WithdrawQuantity)) ;
+    Writeln('HasTool: ' + ToStr(HasTool)) ;
+
+    Self.ProduceCount := 0;
+    Self.ItemOne := SelectedItemOne;
+    Self.ItemTwo := SelectedItemTwo;
+    Self.Produce := SelectedProduce;
+    Self.Quantity := WithdrawQuantity;
+    Self.GivesExp := GivesExp;
+    Self.MakeSelectOption := MakeProduceOption;
+    Self.UseTool  := HasTool;
+  end
+  Self.RSW.SetupNamedRegion();
+  Mouse.Speed             := Random(16, 22);
+  Mouse.MissChance        := 7;
+  Mouse.Distribution      := MOUSE_DISTRIBUTION_GAUSS;
+  ItemFinder.Similarity   := 0.9999;
+
+  //Self.ActionProfit := (
+  //  ItemData.GetAverage(SelectedProduce) -
+  //  (ItemData.GetAverage(SelectedItemOne) + ItemData.GetAverage(SelectedItemTwo))
+  //);
+end;
+
+
+function TMaker.CombineItems(): Boolean;
+begin
+
+  XPBar.EarnedXP();
+
+  if Antiban.BioDice() then
+    Inventory.Use(Self.ItemTwo, Self.ItemOne)
+  else
+    Inventory.Use(Self.ItemOne, Self.ItemTwo);
+
+
+  WaitUntil(Make.IsOpen, 75, 7500);
+
+  //Keyboard.PressKey(VK_ENTER);
+
+  //Writeln("Quantity buttons: " + ToStr(Make.GetQuantityButtons()));
+  //Writeln("Item buttons: " + ToStr(Make.GetItemButtons()));
+
+  if  Make.Select(ToStr(Self.MakeSelectOption), Make.QUANTITY_ALL, True) then
+     Result := WaitUntil(Inventory.IsOpen() or XPBar.EarnedXP(), 300, 6000)
+  else
+     Result := False;
+
+  Self.Producing := Result;
+end;
+
+function TMaker.WaitMaking(): Boolean;
+var lastProduceCount: Int32 := 0;
+var newProduceCount: Int32 := 0;
+begin
+
+  if Self.Producing then
+    begin
+      if Self.GivesExp then
+        Result := Inventory.ContainsAll([Self.ItemOne, Self.ItemTwo]) and XPBar.WaitXP(6000)
+      else
+      begin
+        Self.ProduceCount := Inventory.CountItem(Self.Produce);
+        lastProduceCount := Self.ProduceCount;
+
+        if Self.ProduceCount >= Self.Quantity then
+          Result := False
+        else if Self.ProduceCount < Self.Quantity then
+          begin
+            WaitUntil((lastProduceCount < Inventory.CountItem(Self.Produce)), 100, 3000);
+            newProduceCount := Inventory.CountItem(Self.Produce);
+
+            if (lastProduceCount = newProduceCount) or (newProduceCount = Self.Quantity) then
+              Result:= False
+             else
+              Result := Inventory.ContainsAll([Self.ItemOne, Self.ItemTwo]);
+          end
+      end
+    end
+  else
+  begin
+    if Self.GivesExp then
+      Result := XPBar.WaitXP(6000)
+    else
+      Result := False;
+  end
+
+  Self.Producing := Result;
+end;
+
+function TMaker.Deposit(): Boolean;
+var itemCount: Int32;
+
+begin
+  Self.Producing := False;
+  itemCount := Inventory.CountItem(Self.Produce);
+
+  if Self.UseTool or Antiban.BioDice() then
+     Bank.DepositItem(Self.Produce, False)
+  else
+     Bank.DepositAll();
+
+  Result := WaitUntil(Inventory.CountItem(Self.Produce) = 0, 100, 3000);
+
+  if Result then
+  begin
+    Self.TotalActions += itemCount;
+    Self.TotalProfit := Self.TotalActions * Self.ActionProfit;
+  end;
+end;
+
+
+
+function TMaker.GetState(): EMakerState;
+begin
+  if WL.Activity.IsFinished() then
+    Exit(EMakerState.END_SCRIPT);
+
+  if Chat.LeveledUp() then
+  begin
+    Self.Producing := False;
+    Exit(EMakerState.LEVEL_UP);
+  end;
+
+  if MainScreen.HasInterface() then
+  begin
+    if Bank.IsOpen() then
+    begin
+      if Inventory.ContainsItem(Self.Produce) then
+        Exit(EMakerState.DEPOSIT_PRODUCT);
+
+      if BankEmpty or Inventory.ContainsAll([Self.ItemOne, Self.ItemTwo]) then
+        Exit(EMakerState.CLOSE_INTERFACE);
+
+      if not Inventory.ContainsItem(Self.ItemOne) then
+        Exit(EMakerState.WITHDRAW_TOOL);
+
+      if not Inventory.ContainsItem(Self.ItemTwo) then
+        Exit(EMakerState.WITHDRAW_MATERIAL);
+    end;
+
+    if CollectBox.IsOpen() then
+    begin
+      if Self.CollectEmpty or Inventory.ContainsAll([Self.ItemOne, Self.ItemTwo]) then
+        Exit(EMakerState.CLOSE_INTERFACE);
+      Exit(EMakerState.HANDLE_COLLECT);
+    end;
+
+    Exit(EMakerState.CLOSE_INTERFACE);
+  end;
+
+  if Inventory.IsOpen() then
+  begin
+    if Inventory.ContainsAll([Self.ItemOne, Self.ItemTwo]) then
+    begin
+      if Self.Producing then
+        Exit(EMakerState.WAIT_PRODUCING);
+      Exit(EMakerState.COMBINE_ITEMS);
+    end;
+
+    if Self.BankEmpty and Self.CollectEmpty then
+      Exit(EMakerState.OUT_OF_SUPPLIES);
+
+    if Self.BankEmpty then
+      Exit(EMakerState.OPEN_COLLECT);
+
+    Exit(EMakerState.OPEN_BANK);
+  end;
+
+  if Inventory.IsOpen() then
+  begin
+    if Self.Producing then
+      Exit(OPEN_INVENTORY);
+    Exit(COMBINE_ITEMS);
+  end;
+
+  Exit(EMakerState.OPEN_INVENTORY);
+end;
+
+function TMaker.Terminate(): Boolean; override;
+begin
+  if inherited then
+      //if Result := Bank.WithdrawItem(["Pineapple pizza", 'All', True], True) then
+        PrintReport();
+
+end;
+
+procedure TMaker.Run(maxActions: Int32; maxTime: Int64);
+begin
+  Self.Init(maxActions, maxTime);
+
+  repeat
+    State := Self.GetState();
+    Self.SetAction(ToStr(State));
+    //Writeln(State);
+    case State of
+      EMakerState.OPEN_BANK: Bank.WalkOpen();
+      EMakerState.WITHDRAW_TOOL:
+      begin
+        if Self.UseTool then
+         Self.Withdraw([Self.ItemOne, 1, False])
+         else
+         Self.Withdraw([Self.ItemOne, Self.Quantity, False]);
+      end
+      EMakerState.WITHDRAW_MATERIAL:
+      begin
+        if Self.UseTool then
+        Self.Withdraw([Self.ItemTwo, 27, False])
+        else
+        Self.Withdraw([Self.ItemTwo, Self.Quantity, False]);
+      end
+      EMakerState.DEPOSIT_PRODUCT: Self.Deposit();
+
+      EMakerState.OPEN_COLLECT: CollectBox.WalkOpen();
+      EMakerState.HANDLE_COLLECT: Self.HandleCollectBox([Self.ItemOne, Self.ItemTwo]);
+      EMakerState.CLOSE_INTERFACE: MainScreen.CloseInterface();
+
+      EMakerState.WAIT_PRODUCING: Self.WaitMaking();
+      EMakerState.LEVEL_UP: Chat.HandleLevelUp();
+
+      EMakerState.OPEN_INVENTORY: Inventory.Open();
+      EMakerState.COMBINE_ITEMS: Self.CombineItems();
+
+      EMakerState.OUT_OF_SUPPLIES, EMakerState.END_SCRIPT: Break;
+    end;
+
+    Self.DoAntiban();
+  until Self.ShouldStop();
+
+  if not Self.Terminate() then
+    TerminateScript(Self.Name + ' didn''t terminate properly. Stopping execution.');
+end;
+
+var
+  Maker: TMaker;
+
+{$IFNDEF SCRIPT_CHAIN}
+{$IFDEF SCRIPT_GUI}
+type
+  TMakerConfig = record(TScriptForm)
+    TypeSelector: TLabeledCombobox;
+  end;
+
+procedure TMakerConfig.StartScript(sender: TObject); override;
+begin
+  //RegularJewel := Self.GemSelector.getText().Replace('Red t', 'T') + ' ' + Self.JewelSelector.getText().ToLower();
+  inherited;
+end;
+
+procedure TMakerConfig.MakeTypeSelectorOnChange(sender: TObject);
+var
+  combobox: TComboBox;
+  text: String;
+  isFletching: Boolean;
+  isHerblore: Boolean;
+begin
+  combobox := sender;
+  text := combobox.getText();
+
+ Writeln("Selected " + ToStr(text));
+
+ MakeProduceOption := text;
+ //isFletching := 'shortbow' in text := 'longbow' in text := 'bolts' in text;
+ //isHerblore := 'potion' in text;
+
+ if ('shortbow' in text) or ('longbow' in text) then
+  begin
+     SelectedProduce := text;
+     SelectedSkill := ERSSkill.FLETCHING;
+     if '(u)' in text then
+     begin
+        HasTool  := True;
+        SelectedItemOne  := 'Knife';
+        WithdrawQuantity := 27;
+
+        if 'shortbow' in text then
+          SelectedItemTwo  := (text.Before(' shortbow')) + ' logs'
+        else if 'longbow' in text then
+          SelectedItemTwo  := (text.Before(' longbow')) + ' logs'
+        else
+          Writeln('Invalid bow type: ' + text);
+        MakeProduceOption := text.Replace(' (u)', '' );
+        SelectedProduce  := text;
+     end
+     else
+     begin
+       SelectedItemOne := text + ' (u)';
+       SelectedItemTwo := 'Bow string';
+     end
+  end
+   if ('bolts' in text) then
+   begin
+         SelectedProduce := text;
+         SelectedSkill := ERSSkill.FLETCHING;
+         WithdrawQuantity := 10000;
+         SelectedProduce  := text;
+
+         if text = 'Ruby bolts' then
+            begin
+                 SelectedItemOne :='Adamant bolts';
+                 SelectedItemTwo := 'Ruby bolt tips';
+            end
+         else if text = 'Dragonstone bolts' then
+            begin
+                 SelectedItemOne :='Runite bolts';
+                 SelectedItemTwo := 'Dragonstone bolt tips';
+            end
+   end
+
+  else if 'potion' in text then
+    begin
+        SelectedProduce := text;
+        SelectedSkill := ERSSkill.Herblore;
+      if text = 'Strength potion(3)' then
+        begin
+          SelectedItemOne := 'Tarromin potion (unf)';
+          SelectedItemTwo := 'Limpwurt root';
+        end
+        else if text = 'Energy potion(3)' then
+        begin
+          SelectedItemOne := 'Harralander potion (unf)';
+          SelectedItemTwo := 'Chocolate dust';
+        end
+        else if text = 'Ranarr potion (unf)' then
+         begin
+          SelectedItemOne := 'Ranarr weed';
+          SelectedItemTwo := 'Vial of water';
+          GivesExp := False;
+        end
+        else if text = 'Toadflax potion (unf)' then
+        begin
+          SelectedItemOne := 'Toadflax';
+          SelectedItemTwo := 'Vial of water';
+          GivesExp := False;
+        end
+    end
+    else if 'Ruby' in text then
+  begin
+        SelectedSkill := ERSSkill.CRAFTING;
+        HasTool  := True;
+        SelectedItemOne  := 'Chisel';
+        SelectedItemTwo  := 'Uncut ' + text;
+        MakeProduceOption := 'Uncut ' + text;
+        WithdrawQuantity := 27;
+        SelectedProduce  := text;
+  end
+  else if text = 'Pineapple pizza' then
+  begin
+     SelectedItemOne := 'Plain pizza';
+     SelectedItemTwo := 'Pineapple ring';
+     SelectedProduce := 'Pineapple pizza';
+     SelectedSkill := ERSSkill.COOKING;
+  end
+  else if text = 'Fertilizer' then
+  begin
+     SelectedItemOne := 'Saltpetre';
+     SelectedItemTwo := 'Compost';
+     SelectedProduce := 'Sulphurous fertiliser';
+     SelectedSkill := ERSSkill.FARMING;
+  end
+  //case text of
+  //'Custom':  Self.CustomFoodName.SetVisible(True);
+  //'Willow shortbow'
+  //end;
+    Writeln('ItemOne: ' + SelectedItemOne) ;
+    Writeln('ItemTwo: ' + SelectedItemTwo) ;
+    Writeln('Produce: ' + SelectedProduce) ;
+    Writeln('Quantity: ' + ToStr(WithdrawQuantity)) ;
+    Writeln('HasTool: ' + ToStr(HasTool)) ;
+end;
+
+procedure TMakerConfig.Run(); override;
+var
+  tab: TTabSheet;
+begin
+  Self.Setup('Niek maker');
+  Self.Start.SetOnClick(@Self.StartScript);
+
+  Self.AddTab('Script Settings');
+  tab := Self.Tabs[High(Self.Tabs)];
+
+  Self.CreateAccountManager(tab);
+
+   with Self.TypeSelector do
+  begin
+    Create(tab);
+    SetCaption('Make type:');
+    SetLeft(TControl.AdjustToDPI(20));
+    SetTop(TControl.AdjustToDPI(200));
+    SetWidth(TControl.AdjustToDPI(200));
+    SetStyle(csDropDownList);
+    AddItemArray(MakeTypes);
+    SetItemIndex(0);
+    Combobox.setOnChange(@Self.MakeTypeSelectorOnChange);
+  end;
+
+  //with Self.Quantity do
+  //begin
+  //  Create(tab);
+  //  SetCaption('Quantity ');
+  //  SetLeft(Self.TypeSelector.GetRight() + TControl.AdjustToDPI(20));
+  //  SetTop(Self.TypeSelector.GetTop());
+  //  SetWidth(TControl.AdjustToDPI(200));
+  //  SetText(ToStr(WithdrawQuantity));
+  //end;
+
+  Self.CreateVersionPanel(tab);
+  Self.CreateAntibanManager();
+  Self.CreateBankSettings();
+  Self.CreateWaspLibSettings();
+  Self.CreateAPISettings();
+
+  inherited;
+end;
+
+var
+  MakerConfig: TMakerConfig;
+{$ENDIF}
+{$ENDIF}
+
+{$IFNDEF SCRIPT_CHAIN}
+begin
+  {$IFDEF SCRIPT_GUI}
+  MakerConfig.Run();
+  {$ENDIF}
+  Maker.Run(WLSettings.MaxActions, WLSettings.MaxTime);
+end.
+{$ENDIF}

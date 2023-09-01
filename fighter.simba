@@ -1,0 +1,133 @@
+{$UNDEF SCRIPT_ID}{$DEFINE SCRIPT_ID := ''}
+{$UNDEF SCRIPT_REVISION}{$DEFINE SCRIPT_REVISION := '1'}
+{$IFDEF WINDOWS}{$DEFINE SCRIPT_GUI}{$ENDIF}
+{$I SRL-T/osr.simba}
+{$I WaspLib/osr.simba}
+
+begin
+  Login.PlayerIndex := 0;
+end;
+
+type
+  ETask = (
+    TASK_TO_DO
+  );
+
+var
+  CurrentTask: ETask := ETask.TASK_TO_DO;
+
+
+const REGIONS = RSRegions.VARROCK_SEWERS;
+const MONSTER = RsMonsters.AnyMonster;
+
+type
+  EState = (
+    WAIT_STATE,
+    EAT_FOOD,
+    LOOT,
+    END_SCRIPT
+  );
+
+  TScript = record(TBaseWalkerScript)
+    State: EState;
+    CombatHandlerState: String;
+  end;
+
+
+procedure TAntiban.Setup(); override;
+begin
+  Self.Skills := [ERSSkill.STRENGTH, ERSSkill.ATTACK, ERSSkill.DEFENCE, ERSSkill.HITPOINTS, ERSSkill.TOTAL];
+  Self.MinZoom := 25;
+  Self.MaxZoom := 65;
+
+  inherited;
+end;
+procedure TScript.Init(maxActions: Int32; maxTime: Int64); override;
+begin
+  inherited;
+  Mouse.Speed := Random(20, 25);
+
+  //Self.RSW.SetupNamedRegion();
+  Self.RSW.Setup([RSRegions.VARROCK_SEWERS]);
+
+  Options.SetNPCAttackOption(ERSAttackOption.ALWAYS_LEFT_CLICK);
+  CombatHandler.BuryBones := true;
+  CombatHandler.LootEnabled := true;
+
+  //CombatHandler.AttackMonsterDelay := 10000;
+  CombatHandler.Setup(True, RsMonsters.HillGiant, 1000, 4000);
+
+  Combat.SetAutoRetaliate(True);
+
+end;
+
+function TScript.GetState(): EState;
+begin
+  if WL.Activity.IsFinished() and not MainScreen.InCombat() then
+    Exit(END_SCRIPT);
+
+  if (Minimap.GetHPLevel() <= 15) then
+  begin
+    if Inventory.ContainsConsumable(FOOD_CONSUMABLE) then
+      Exit(EAT_FOOD)
+  end
+
+  if not MainScreen.InCombat() then
+    Exit(LOOT);
+
+  Exit(WAIT_STATE);
+end;
+
+//function TScript.CheckLoot(): Boolean;
+//var
+//  B: TBox := MainScreen.GetPlayerFloorBox();
+//  B2: TBox := RSW.GetMyPos();
+//begin
+//  while Inventory.IsFull() and Inventory.ContainsConsumable(FOOD_CONSUMABLE) do
+//    Inventory.Consume(FOOD_CONSUMABLE);
+//
+//  //Result := CheckedLoot := True;
+//    Result := True;
+//  while CombatHandler.LootHandler.CheckLoot(B) and Inventory.HasSpace(1) do
+//    Wait(400, 600);
+//end;
+
+procedure TScript.Run(maxActions: Int32; maxTime: Int64);
+begin
+  Self.Init(maxActions, maxTime);
+
+  repeat
+    Self.State := Self.GetState();
+    Self.CombatHandlerState := CombatHandler.GetState();
+    Writeln("self state " + ToStr(Self.state));
+
+    Writeln('Combat handler state: ' + ToStr(Self.CombatHandlerState));
+    Writeln("loothandler state " + ToStr(CombatHandler.LootHandler.IsSetup));
+    //Self.SetAction(ToStr(Self.State));
+    Self.SetAction(ToStr(Self.CombatHandlerState));
+
+    case State of
+      LOOT: CombatHandler.Loot(RSW.GetMyPos());
+      EAT_FOOD: Inventory.Consume(FOOD_CONSUMABLE);
+      WAIT_STATE: Wait(500, 800);
+      END_SCRIPT: Break;
+    end;
+
+    CombatHandler.DoActions(Self.CombatHandlerState);
+
+    Self.DoAntiban();
+  until Self.ShouldStop();
+end;
+
+var
+  Script: TScript;
+
+{$IFDEF SCRIPT_GUI}
+{$ENDIF}
+
+begin
+  {$IFDEF SCRIPT_GUI}
+  //Sync(@Config.Run);
+  {$ENDIF}
+  Script.Run(WLSettings.MaxActions, WLSettings.MaxTime);
+end.

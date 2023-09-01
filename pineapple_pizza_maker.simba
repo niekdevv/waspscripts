@@ -1,0 +1,275 @@
+//{$DEFINE SCRIPT_ID := '242c8d26-e9c9-4de5-945b-5f0288307dfc'}
+{$DEFINE SCRIPT_REVISION := '1'}
+{$IFNDEF SCRIPT_CHAIN}
+  {$DEFINE SCRIPT_GUI}
+  {$I SRL-T/osr.simba}
+  {$I WaspLib/osr.simba}
+
+begin
+  Login.PlayerIndex := 0;
+end;
+{$ENDIF}
+
+var PlainPizza: TRSItem = 'Plain pizza';
+var PineappleRing: TRSItem = 'Pineapple ring';
+var PineapplePizza: TRSItem = 'Pineapple pizza';
+
+type
+  EEnchanterState = (
+    LEVEL_UP,
+    CLOSE_CONTEXT,
+
+    OPEN_BANK,
+    WITHDRAW_TOOL,
+    WITHDRAW_MATERIAL,
+    DEPOSIT_PRODUCT,
+
+    OPEN_COLLECT,
+    HANDLE_COLLECT,
+    CLOSE_INTERFACE,
+
+    OPEN_INVENTORY,
+
+    MAKE_PIZZA,
+    WAIT_COOKING,
+
+    OUT_OF_SUPPLIES,
+    END_SCRIPT
+  );
+
+  TEnchanter = record(TBaseBankScript)
+    State: EEnchanterState;
+    Cooking: Boolean;
+  end;
+
+procedure TAntiban.Setup(); override;
+begin
+  Self.Skills := [ERSSkill.COOKING, ERSSkill.TOTAL];
+  Self.MinZoom := 15;
+  Self.MaxZoom := 85;
+
+  inherited;
+end;
+
+procedure TEnchanter.Init(maxActions: Int32; maxTime: Int64); override;
+begin
+  inherited;
+  Self.RSW.SetupNamedRegion();
+
+  Mouse.Speed             := Random(16, 22);
+  Mouse.MissChance        := 7;
+  Mouse.Distribution      := MOUSE_DISTRIBUTION_GAUSS;
+  ItemFinder.Similarity   := 0.9999;
+
+  Self.ActionProfit := (
+    ItemData.GetAverage("Pineapple pizza") -
+    (ItemData.GetAverage("Plain pizza") + ItemData.GetAverage("Pineapple ring"))
+  );
+end;
+
+
+function TEnchanter.MakePizza(): Boolean;
+begin
+
+  XPBar.EarnedXP();
+
+  Inventory.Use('Plain pizza', 'Pineapple ring');
+
+  WaitUntil(Make.IsOpen, 75, 7500);
+
+  if  Make.Select('Pineapple pizza', Make.QUANTITY_ALL, True) then
+     Result := WaitUntil(Inventory.IsOpen() or XPBar.EarnedXP(), 300, 6000);
+
+  Self.Cooking := Result;
+end;
+
+function TEnchanter.WaitEnchanting(): Boolean;
+begin
+  if Self.Cooking then
+    Result := Inventory.ContainsAll(["Plain pizza", "Pineapple ring"]) and XPBar.WaitXP(5000)
+  else
+    Result := XPBar.WaitXP(5000);
+
+  Self.Cooking := Result;
+end;
+
+function TEnchanter.Deposit(): Boolean;
+var itemCount: Int32;
+
+begin
+  itemCount := Inventory.CountItem("Pineapple pizza");
+
+  if TSRL.NormalRange(1, 4) = 1 then
+     Bank.DepositItem("Pineapple pizza", False)
+  else
+     Bank.DepositAll();
+
+  Result := WaitUntil(Inventory.CountItem("Pineapple pizza") = 0, 100, 3000);
+
+  if Result then
+  begin
+    Self.TotalActions += itemCount;
+    Self.TotalProfit := Self.TotalActions * Self.ActionProfit;
+  end;
+end;
+
+
+
+function TEnchanter.GetState(): EEnchanterState;
+begin
+  if WL.Activity.IsFinished() then
+    Exit(EEnchanterState.END_SCRIPT);
+
+  if Chat.LeveledUp() then
+  begin
+    Self.Cooking := False;
+    Exit(EEnchanterState.LEVEL_UP);
+  end;
+
+  if MainScreen.HasInterface() then
+  begin
+    if Bank.IsOpen() then
+    begin
+      if Inventory.ContainsItem("Pineapple pizza") then
+        Exit(EEnchanterState.DEPOSIT_PRODUCT);
+
+      if BankEmpty or Inventory.ContainsAll(["Plain pizza", "Pineapple ring"]) then
+        Exit(EEnchanterState.CLOSE_INTERFACE);
+
+      if not Inventory.ContainsItem("Plain pizza") then
+        Exit(EEnchanterState.WITHDRAW_TOOL);
+
+      if not Inventory.ContainsItem("Pineapple ring") then
+        Exit(EEnchanterState.WITHDRAW_MATERIAL);
+    end;
+
+    if CollectBox.IsOpen() then
+    begin
+      if Self.CollectEmpty or Inventory.ContainsAll(["Plain pizza", "Pineapple ring"]) then
+        Exit(EEnchanterState.CLOSE_INTERFACE);
+      Exit(EEnchanterState.HANDLE_COLLECT);
+    end;
+
+    Exit(EEnchanterState.CLOSE_INTERFACE);
+  end;
+
+  if Inventory.IsOpen() then
+  begin
+    if Inventory.ContainsAll(['Plain pizza', 'Pineapple ring']) then
+    begin
+      if Self.Cooking then
+        Exit(EEnchanterState.WAIT_COOKING);
+      Exit(EEnchanterState.MAKE_PIZZA);
+    end;
+
+    if Self.BankEmpty and Self.CollectEmpty then
+      Exit(EEnchanterState.OUT_OF_SUPPLIES);
+
+    if Self.BankEmpty then
+      Exit(EEnchanterState.OPEN_COLLECT);
+
+    Exit(EEnchanterState.OPEN_BANK);
+  end;
+
+  if Inventory.IsOpen() then
+  begin
+    if Self.Cooking then
+      Exit(OPEN_INVENTORY);
+    Exit(MAKE_PIZZA);
+  end;
+
+  Exit(EEnchanterState.OPEN_INVENTORY);
+end;
+
+function TEnchanter.Terminate(): Boolean; override;
+begin
+  if inherited then
+      //if Result := Bank.WithdrawItem(["Pineapple pizza", 'All', True], True) then
+        PrintReport();
+
+end;
+
+procedure TEnchanter.Run(maxActions: Int32; maxTime: Int64);
+begin
+  Self.Init(maxActions, maxTime);
+
+  repeat
+    State := Self.GetState();
+    Self.SetAction(ToStr(State));
+    Writeln(State);
+    case State of
+      EEnchanterState.OPEN_BANK: Bank.WalkOpen();
+      EEnchanterState.WITHDRAW_TOOL: Self.Withdraw(["Plain pizza", 14, False]);
+      EEnchanterState.WITHDRAW_MATERIAL: Self.Withdraw(["Pineapple ring", 14, False]);
+      EEnchanterState.DEPOSIT_PRODUCT: Self.Deposit();
+
+      EEnchanterState.OPEN_COLLECT: CollectBox.WalkOpen();
+      EEnchanterState.HANDLE_COLLECT: Self.HandleCollectBox(["Pineapple ring", "Plain pizza"]);
+      EEnchanterState.CLOSE_INTERFACE: MainScreen.CloseInterface();
+
+      EEnchanterState.WAIT_COOKING: Self.Cooking := XPBar.WaitXP(5000);
+      EEnchanterState.LEVEL_UP: Chat.HandleLevelUp();
+
+      EEnchanterState.OPEN_INVENTORY: Inventory.Open();
+      EEnchanterState.MAKE_PIZZA: Self.MakePizza();
+
+      EEnchanterState.OUT_OF_SUPPLIES, EEnchanterState.END_SCRIPT: Break;
+    end;
+
+    Self.DoAntiban();
+  until Self.ShouldStop();
+
+  if not Self.Terminate() then
+    TerminateScript(Self.Name + ' didn''t terminate properly. Stopping execution.');
+end;
+
+var
+  Enchanter: TEnchanter;
+
+{$IFNDEF SCRIPT_CHAIN}
+{$IFDEF SCRIPT_GUI}
+type
+  TEnchanterConfig = record(TScriptForm)
+    GemSelector: TLabeledCombobox;
+    JewelSelector: TLabeledCombobox;
+  end;
+
+procedure TEnchanterConfig.StartScript(sender: TObject); override;
+begin
+  //RegularJewel := Self.GemSelector.getText().Replace('Red t', 'T') + ' ' + Self.JewelSelector.getText().ToLower();
+  inherited;
+end;
+
+procedure TEnchanterConfig.Run(); override;
+var
+  tab: TTabSheet;
+begin
+  Self.Setup('Niek pineapple pizza');
+  Self.Start.SetOnClick(@Self.StartScript);
+
+  Self.AddTab('Script Settings');
+  tab := Self.Tabs[High(Self.Tabs)];
+
+  Self.CreateAccountManager(tab);
+  Self.CreateVersionPanel(tab);
+  Self.CreateAntibanManager();
+  Self.CreateBankSettings();
+  Self.CreateWaspLibSettings();
+  Self.CreateAPISettings();
+
+  inherited;
+end;
+
+var
+  EnchanterConfig: TEnchanterConfig;
+{$ENDIF}
+{$ENDIF}
+
+{$IFNDEF SCRIPT_CHAIN}
+begin
+  {$IFDEF SCRIPT_GUI}
+  EnchanterConfig.Run();
+  {$ENDIF}
+  Enchanter.Run(WLSettings.MaxActions, WLSettings.MaxTime);
+end.
+{$ENDIF}

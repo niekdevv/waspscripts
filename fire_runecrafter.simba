@@ -1,0 +1,269 @@
+{$UNDEF SCRIPT_ID}{$DEFINE SCRIPT_ID := ''}
+{$UNDEF SCRIPT_REVISION}{$DEFINE SCRIPT_REVISION := '1'}
+{$IFDEF WINDOWS}{$DEFINE SCRIPT_GUI}{$ENDIF}
+{$I SRL-T/osr.simba}
+{$I WaspLib/osr.simba}
+
+begin
+  Login.PlayerIndex := 0;
+  WLSettings.RemoteInput.HUDReport   := False;
+  //Disable chat antiban
+  WLSettings.Antiban.Chat := False;
+end;
+
+const AltarPoint: TPoint := [9072, 164];
+const MysteriousRunesPoint: TPoint := [8649, 3432];
+
+type
+  EState = (
+    WAIT_STATE,
+    END_SCRIPT,
+    OPEN_INVENTORY,
+    EQUIP_RING,
+    WITHDRAW_RING,
+    WITHDRAW_ESSENCE,
+    TELE_CASTLEWARS,
+    TELE_PVP_ARENA,
+    WALK_ALTAR,
+    WALK_RUINS,
+    CRAFT_ESSENCE
+  );
+
+  TRuneCrafter = record(TBaseBankScript)
+    State: EState;
+    AltarObject: TRSObject;
+    AltarPortalObject: TRSObject;
+    MysteriousRuinsObject: TRSObject;
+    HasRing: Boolean;
+  end;
+
+
+procedure TAntiban.Setup(); override;
+begin
+  Self.Skills := [ERSSkill.RUNECRAFTING];
+  Self.MinZoom := 15;
+  Self.MaxZoom := 30;
+
+
+  inherited;
+end;
+
+procedure TRuneCrafter.Init(maxActions: Int32; maxTime: Int64); override;
+begin
+  inherited;
+
+  Mouse.Speed             := Random(20, 22);
+
+  Self.RSW.Setup([RSRegions.CASTLE_WARS, RSRegions.ALTARS, RSRegions.AL_KHARID]);    //Setup the regions for the walker
+  Self.AltarObject := RsObjects.RCAltar;
+  Self.AltarPortalObject := RSObjects.RCPortal;
+  Self.MysteriousRuinsObject := RSObjects.MysteriousRuins;
+
+  Self.HasRing := Equipment.ContainsItem('Ring of dueling(8)');
+  //Self.RingLevel := 8;
+end;
+
+function TRuneCrafter.GetState(): EState;
+begin
+  if WL.Activity.IsFinished() then
+    Exit(END_SCRIPT);
+
+  //Writeln("Pos: " + ToStr(RSW.GetMyPos()) );
+
+  if Self.InAlKharid() then
+    Exit(WALK_RUINS);
+
+  if Self.InCastleWars() then
+    begin
+      if (Inventory.CountItem('Pure essence') >= 1) and (Self.HasRing) then
+         Exit(TELE_PVP_ARENA);
+      if not Self.HasRing then
+         Exit(WITHDRAW_RING);
+
+      Exit(WITHDRAW_ESSENCE);
+    end
+
+  if Self.InAltar() then
+    begin
+    if Inventory.CountItem('Pure essence') <= 0 then
+      Exit(TELE_CASTLEWARS);
+
+    if Self.CanClickAltar() then
+       Exit(CRAFT_ESSENCE);
+
+    Exit(WALK_ALTAR);
+    end;
+
+  Exit(WAIT_STATE);
+end;
+
+function TRuneCrafter.CheckRingExpired(): Boolean;
+begin
+  Result := Chat.FindMessage('Your ring of dueling crumbles to dust.');
+end;
+
+function TRuneCrafter.CanClickAltar(): Boolean;
+begin
+  Result := AltarPoint.DistanceTo(Self.RSW.GetMyPos()) < 25;
+end;
+
+function TRuneCrafter.InAltar(): Boolean;
+begin
+  Result := RSRegions.ALTARS.Contains(RSW.GetMyPos());
+end;
+
+function TRuneCrafter.InCastleWars(): Boolean;
+begin
+  Result := RSRegions.CASTLE_WARS.Contains(RSW.GetMyPos());
+end;
+
+function TRuneCrafter.InAlKharid(): Boolean;
+begin
+  Result := RSRegions.AL_KHARID.Contains(RSW.GetMyPos());
+end;
+
+function TRuneCrafter.TeleToCastleWars(): Boolean;
+begin
+  Equipment.ClickItem("ring of dueling(1)", "Castle Wars");
+  Result := Waituntil(Self.InCastleWars(), 250, 8000);
+
+  if Self.CheckRingExpired() then
+     Self.HasRing := False;
+
+end;
+
+function TRuneCrafter.TeleToDuelArena(): Boolean;
+begin
+    Equipment.ClickItem("ring of dueling(1)", "PvP Arena");
+    Result := Waituntil(Self.InAlKharid(), 250, 8000);
+end;
+
+function TRuneCrafter.WalkRuins(): Boolean;
+var rect: TRectangle;
+begin
+  Self.RSW.WebWalk([8636, 3436], 30);
+  //Self.RSW.WebWalk(WaspWeb.LOCATION_FIRE_RUINS, 40);
+
+   rect := RSW.GetTileMS(MysteriousRunesPoint, 4);
+   RSClient.Image.DrawRect(rect, clAqua);
+   Mouse.Move(rect, True);
+
+   Wait(0, 1000);
+   if MainScreen.IsUpText('Enter') then
+       Mouse.Click(rect, MOUSE_LEFT);
+
+   Wait(1000, 2500);
+  Result := True;
+  //Result := WaitUntil(Self.MysteriousRuinsObject.Click(True, 4), 250, 3000);
+end;
+
+function TRuneCrafter.WalkAltar(): Boolean;
+begin
+  Result := Self.RSW.WalkBlind(AltarPoint, 30);
+end;
+
+function TRuneCrafter.DoCrafting(): Boolean;
+var rect: TRectangle;
+begin
+
+   rect := RSW.GetTileMS(AltarPoint, 4);
+   RSClient.Image.DrawRect(rect, clAqua);
+   Mouse.Move(rect, True);
+
+   Wait(0, 1000);
+   if MainScreen.IsUpText('Craft-rune') then
+       Mouse.Click(rect, MOUSE_LEFT);
+
+
+  Result := WaitUntil(Inventory.CountItem('Pure essence') <= 0, 100, 2000);
+
+  XPBar.EarnedXP();
+  Self.TotalActions :=  Self.TotalActions + 1;
+
+end;
+
+
+function TRuneCrafter.WithdrawEssence(): Boolean;
+
+begin
+  Waituntil(Bank.WalkOpen(), 250, 8000);
+
+  if Bank.IsOpen() then
+  begin
+      if Inventory.Count() > 0 then
+        Waituntil(Bank.DepositAll(), 250, 8000);
+
+      Self.Withdraw(['Pure essence', 28, False]);
+  end;
+
+  Waituntil(Bank.Close(), 250, 8000);
+
+  Result := Inventory.CountItem('Pure essence') >= 28;
+end;
+
+function TRuneCrafter.WithdrawRing(): Boolean;
+begin
+
+  Waituntil(Bank.WalkOpen(), 250, 8000);
+
+  if Bank.IsOpen() then
+  begin
+      Waituntil(Bank.DepositAll(), 250, 8000);
+      Self.Withdraw(['Ring of dueling(8)', 1, False]);
+  end
+
+  Waituntil(Bank.Close(), 250, 8000);
+
+  Result := Self.HasRing := Inventory.ClickItem('Ring of dueling(8)');
+end;
+
+procedure TRuneCrafter.Run(maxActions: Int32; maxTime: Int64);
+
+begin
+  Self.Init(maxActions, maxTime);
+
+  repeat
+    Self.State := Self.GetState();
+
+   //Writeln("self state " + ToStr(Self.State));
+   //Writeln("in alkharid " + ToStr(Self.InAlKharid()));
+   //Writeln("In castle wars " + ToStr(Self.InCastleWars()));
+   //Writeln("In altar " + ToStr(Self.InAltar()));
+   //Writeln("mypos " + ToStr(Self.RSW.GetMyPos()));
+
+   //left up: 9069 159
+   //right down:  9077 170
+
+   Self.SetAction(ToStr(Self.State));
+
+    case State of
+      WAIT_STATE: Wait(500, 800);
+      END_SCRIPT: Break;
+      OPEN_INVENTORY: Inventory.Open();
+      WITHDRAW_RING: Self.WithdrawRing();
+      WITHDRAW_ESSENCE: Self.WithdrawEssence();
+      TELE_CASTLEWARS: Self.TeleToCastleWars();
+      TELE_PVP_ARENA: Self.TeleToDuelArena();
+      WALK_RUINS: Self.WalkRuins();
+      WALK_ALTAR: Self.WalkAltar();
+      CRAFT_ESSENCE: Self.DoCrafting();
+    end;
+
+
+    Self.DoAntiban();
+
+  until Self.ShouldStop();
+end;
+
+var
+  Script: TRuneCrafter;
+
+{$IFDEF SCRIPT_GUI}
+{$ENDIF}
+
+begin
+  {$IFDEF SCRIPT_GUI}
+  //Sync(@Config.Run);
+  {$ENDIF}
+  Script.Run(WLSettings.MaxActions, WLSettings.MaxTime);
+end.

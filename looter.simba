@@ -1,0 +1,208 @@
+{$UNDEF SCRIPT_ID}{$DEFINE SCRIPT_ID := ''}
+{$UNDEF SCRIPT_REVISION}{$DEFINE SCRIPT_REVISION := '1'}
+{$IFDEF WINDOWS}{$DEFINE SCRIPT_GUI}{$ENDIF}
+{$I SRL-T/osr.simba}
+{$I WaspLib/osr.simba}
+
+begin
+  Login.PlayerIndex := 0;
+end;
+
+type
+  ETask = (
+    TASK_TO_DO
+  );
+
+var
+  CurrentTask: ETask := ETask.TASK_TO_DO;
+
+
+const REGIONS = RSRegions.VARROCK_SEWERS;
+const MONSTER = RsMonsters.AnyMonster;
+
+type
+  EState = (
+    WAIT_STATE,
+    EAT_FOOD,
+    LOOT,
+    ALCH_DROP,
+    END_SCRIPT
+  );
+
+  TScript = record(TBaseWalkerScript)
+    State: EState;
+    CombatHandlerState: String;
+  end;
+
+
+procedure TAntiban.Setup(); override;
+begin
+  Self.Skills := [ERSSkill.STRENGTH, ERSSkill.ATTACK, ERSSkill.DEFENCE, ERSSkill.HITPOINTS, ERSSkill.TOTAL];
+  Self.MinZoom := 25;
+  Self.MaxZoom := 65;
+
+  inherited;
+end;
+procedure TScript.Init(maxActions: Int32; maxTime: Int64); override;
+begin
+  inherited;
+  Mouse.Speed := Random(20, 25);
+
+  //Self.RSW.SetupNamedRegion();
+  Self.RSW.Setup([RSRegions.CATACOMBS_OF_KOUREND]);
+  RSAlchHandler.Setup();
+  RSGroundItems.Setup();
+  //TRSLootHandler.Setup(RSMonsters.GreaterNechryael, lootValue);
+  CombatHandler.Setup(False, RsMonsters.GreaterNechryael, 1000, 4000);
+
+  CombatHandler.LootHandler.Loot.UpText += 'Blood rune';
+  CombatHandler.LootHandler.Drops += ['Blood rune', '', True, False, 3];
+  CombatHandler.LootHandler.Loot.UpText += 'Wine of zamorak';
+  CombatHandler.LootHandler.Drops += ['Wine of zamorak', '', True, True, 3];
+  CombatHandler.LootHandler.Loot.UpText += 'Gold bar';
+  CombatHandler.LootHandler.Drops += ['Gold bar', '', True, True, 5];
+  CombatHandler.LootHandler.Loot.UpText += 'Coins';
+  CombatHandler.LootHandler.Drops += ['Coins', '', True, False, -1];
+  CombatHandler.LootHandler.Loot.UpText += 'Adamant battleaxe';
+  CombatHandler.LootHandler.Drops += ['Adamant battleaxe', '', False, False, 2];
+  CombatHandler.LootHandler.Loot.UpText += 'Adamant kiteshield';
+  CombatHandler.LootHandler.Drops += ['Adamant kiteshield', '', False, False, 2];
+  CombatHandler.LootHandler.Loot.UpText += 'Rune boots';
+  CombatHandler.LootHandler.Drops += ['Rune boots', '', False, False, 2];
+  CombatHandler.LootHandler.Loot.UpText += 'Rune axe';
+  CombatHandler.LootHandler.Drops += ['Rune axe', '', False, False, 2];
+  CombatHandler.LootHandler.Loot.UpText += 'Rune sq shield';
+  CombatHandler.LootHandler.Drops += ['Rune sq shield', '', False, False, 2];
+  CombatHandler.LootHandler.Loot.UpText += 'Fiendish ashes';
+  CombatHandler.LootHandler.Drops += ['Fiendish ashes', '', False, False, 2];
+  CombatHandler.LootHandler.Loot.UpText += 'Malicious ashes';
+  CombatHandler.LootHandler.Drops += ['Malicious ashes', '', False, False, 2];
+
+  Options.SetNPCAttackOption(ERSAttackOption.ALWAYS_RIGHT_CLICK);
+  Combat.SetAutoRetaliate(False);
+end;
+
+function TScript.GetState(): EState;
+begin
+  //if WL.Activity.IsFinished() and not MainScreen.InCombat() then
+    //Exit(END_SCRIPT);
+
+  if (Minimap.GetHPLevel() <= 15) then
+  begin
+    if Inventory.ContainsConsumable(FOOD_CONSUMABLE) then
+      Exit(EAT_FOOD)
+  end
+
+  if Inventory.ContainsAny(RSAlchHandler.ItemArray) then
+   Exit(ALCH_DROP);
+
+  if not MainScreen.InCombat() then
+    Exit(LOOT);
+
+  Exit(WAIT_STATE);
+end;
+
+
+function TRSMainScreen.GetPlayerFloorBox(): TBox;
+var
+  A: Double := Minimap.GetCompassAngle(False);
+  Center: TPoint := Minimap.Center();
+  TPA: TPointArray;
+begin
+  TPA := [Minimap.VecToMS(Vec3(Center.X - 5, Center.Y, 5), A),
+          Minimap.VecToMS(Vec3(Center.X + 5, Center.Y, -5), A)];
+
+  Result := TPA.Bounds();
+end;
+
+function TScript.CheckAlchs(): Boolean;
+var
+  B: TBox := MainScreen.GetPlayerFloorBox();
+begin
+  while Inventory.IsFull() and Inventory.ContainsConsumable(FOOD_CONSUMABLE) do
+    Inventory.Consume(FOOD_CONSUMABLE);
+
+  //Result := CheckedLoot := True;
+  //RSGroundItems.Setup();
+  Result := True;
+
+  while CombatHandler.LootHandler.CheckLoot(B) and Inventory.HasSpace(1) do
+    Wait(400, 600);
+end;
+
+
+function TScript.CheckLoot(): Boolean;
+var
+  B: TBox := MainScreen.GetPlayerFloorBox();
+begin
+  while Inventory.IsFull() and Inventory.ContainsConsumable(FOOD_CONSUMABLE) do
+    Inventory.Consume(FOOD_CONSUMABLE);
+
+    while Inventory.IsFull() and CombatHandler.BuryBones do
+    Inventory.Consume(FOOD_CONSUMABLE);
+
+  //Result := CheckedLoot := True;
+  //RSGroundItems.Setup();
+  Result := True;
+
+  while CombatHandler.LootHandler.CheckLoot(B) and Inventory.HasSpace(1) do
+    Wait(400, 600);
+end;
+
+procedure TScript.Run(maxActions: Int32; maxTime: Int64);
+var
+  match: TRSItemFinderMatch;
+begin
+  Self.Init(maxActions, maxTime);
+
+  repeat
+    Self.State := Self.GetState();
+    //Self.CombatHandlerState := CombatHandler.GetState();
+    Writeln("self state " + ToStr(Self.state));
+
+    //Writeln('Combat handler state: ' + ToStr(Self.CombatHandlerState));
+    //Writeln("loothandler state " + ToStr(CombatHandler.LootHandler.IsSetup));
+    //Self.SetAction(ToStr(Self.State));
+    Self.SetAction(ToStr(Self.State));
+
+    case State of
+      ALCH_DROP:
+      begin
+        Wait(400, 600);
+        match := Inventory.ItemInterface.FindAny(RSAlchHandler.ItemArray);
+        if match <> [] then
+        begin
+          RSAlchHandler.Item := match.Item;
+          RSAlchHandler.CastAlchemy();
+        end;
+      end;
+      LOOT:
+        begin
+            Wait(1500, 5000);
+            WriteLn("Checking loot");
+            Self.CheckLoot();
+        end
+      //EAT_FOOD: Inventory.Consume(FOOD_CONSUMABLE);
+      WAIT_STATE: Wait(500, 800);
+      END_SCRIPT: Break;
+    end;
+
+    //CombatHandler.DoActions(Self.CombatHandlerState);
+
+    Self.DoAntiban();
+  until Self.ShouldStop();
+end;
+
+var
+  Script: TScript;
+
+{$IFDEF SCRIPT_GUI}
+{$ENDIF}
+
+begin
+  {$IFDEF SCRIPT_GUI}
+  //Sync(@Config.Run);
+  {$ENDIF}
+  Script.Run(WLSettings.MaxActions, WLSettings.MaxTime);
+end.
+
